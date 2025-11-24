@@ -6,20 +6,66 @@ pipeline {
     maven 'M2_HOME'
   }
 
+  environment {
+    DOCKER_IMAGE = "wissemferjani/student-management"
+    CRED_ID = "docker-hub-creds"  // doit exister dans Jenkins (username + token)
+  }
+
   stages {
     stage('Checkout') {
       steps {
-        echo "Checkout handled by Jenkins (Pipeline script from SCM)"
+        echo "Checkout handled by Pipeline (SCM)"
       }
     }
 
-    stage('Compile Stage') {
+    stage('Maven Build') {
       steps {
         dir('student-management') {
-          sh 'mvn -v'
-          sh 'mvn clean compile'
+          // build without tests to speed up first runs; enlève -DskipTests si tu veux exécuter les tests
+          sh 'mvn -B -DskipTests clean package'
         }
       }
+    }
+
+    stage('Build Docker Image') {
+      steps {
+        script {
+          // tag = buildNumber-shortCommit
+          def shortCommit = sh(returnStdout: true, script: "git rev-parse --short=7 HEAD").trim()
+          def imgTag = "${env.BUILD_NUMBER}-${shortCommit}"
+
+          // build using folder student-management as context (assure-toi que Dockerfile est dedans)
+          dockerImage = docker.build("${env.DOCKER_IMAGE}:${imgTag}", "student-management")
+
+          // tag latest
+          sh "docker tag ${env.DOCKER_IMAGE}:${imgTag} ${env.DOCKER_IMAGE}:latest"
+
+          env.IMAGE_TAG = imgTag
+          echo "Built image: ${env.DOCKER_IMAGE}:${env.IMAGE_TAG}"
+        }
+      }
+    }
+
+    stage('Push to Docker Hub') {
+      steps {
+        script {
+          // push both image tags using Jenkins credentials
+          docker.withRegistry('https://registry.hub.docker.com', env.CRED_ID) {
+            dockerImage.push(env.IMAGE_TAG)
+            dockerImage.push('latest')
+          }
+          echo "Pushed ${env.DOCKER_IMAGE}:${env.IMAGE_TAG} and :latest"
+        }
+      }
+    }
+  }
+
+  post {
+    success {
+      echo "DONE: ${env.DOCKER_IMAGE}:${env.IMAGE_TAG} pushed"
+    }
+    failure {
+      echo "Pipeline failed — check Console Output"
     }
   }
 }
